@@ -50,6 +50,10 @@ impl<T> QueueCore<T> {
         }
     }
 
+    pub fn active_workers(&self) -> usize {
+        self.active_workers.load(Ordering::SeqCst)
+    }
+
     /// Ensures there are enough workers to handle pending tasks.
     ///
     /// If the method is going to wake up any threads, source is used to trace who triggers

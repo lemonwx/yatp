@@ -33,6 +33,14 @@ impl<T: TaskCell + Send> ThreadPool<T> {
         (cfg.min_thread_count, cfg.max_thread_count)
     }
 
+    pub fn conf(&self) -> &SchedConfig {
+        self.remote.core.config()
+    }
+
+    pub fn active_workers(&self) -> usize {
+        self.remote.core.active_workers()
+    }
+
     /// Spawns the task into the thread pool.
     ///
     /// If the pool is shutdown, it becomes no-op.
