@@ -1,11 +1,14 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::pool::*;
 use crate::task::callback::Handle;
+use crate::task::future;
 use futures_timer::Delay;
 use rand::seq::SliceRandom;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
+use std::thread::sleep;
 use std::time::*;
 
 #[test]
@@ -293,4 +296,96 @@ fn test_scale_down_workers() {
     assert_eq!(cases, ans);
 
     pool.shutdown();
+}
+
+
+#[test]
+fn test_scale_up_workers2() {
+
+    println!("start test");
+
+    let thread_cnt_handle = Arc::new(AtomicUsize::new(2));
+
+    let pool = Builder::new("test_scale_up")
+        .max_thread_count(4)
+        .core_thread_count(2)
+        .build_with_queue_and_runner(crate::queue::QueueType::SingleLevel, CloneRunnerBuilder(TestRunner{inner: future::Runner::default(), thread_cnt: thread_cnt_handle.clone() }));
+
+    thread_cnt_handle.store(1, Ordering::Relaxed);
+    pool.scale_workers(1);
+
+    let mut rxs = vec![];
+    for _ in 0..30 {
+        let (tx, rx) = mpsc::channel();
+
+        rxs.push(rx);
+        pool.spawn(async move {
+            tx.send(1).unwrap();
+        })
+    }
+
+    for rx in rxs.drain(..) {
+        rx.recv().unwrap();
+         // println!("recv :{}", rx.recv().unwrap());
+    }
+
+    println!();
+    println!();
+    println!();
+    println!();
+    println!();
+
+    println!("mark thread cnt = 3");
+    //
+    thread_cnt_handle.store(3, Ordering::Relaxed);
+    pool.scale_workers(3);
+    // //
+    // //
+    let mut rxs = vec![];
+    for _ in 0..100 {
+        let (tx, rx) = mpsc::channel();
+
+        rxs.push(rx);
+        pool.spawn(async move {
+            // thread::sleep(Duration::from_millis(100));
+            tx.send(1).unwrap();
+        })
+    }
+
+    for rx in rxs.drain(..) {
+        rx.recv().unwrap();
+        // println!("second recv :{}", rx.recv().unwrap());
+    }
+
+
+
+    println!();
+    println!();
+    println!();
+    println!();
+    println!();
+
+    println!("before sleep");
+    sleep(Duration::from_secs(3));
+    println!("after sleep");
+}
+
+#[derive(Clone)]
+struct TestRunner {
+    inner: future::Runner,
+    thread_cnt: Arc<AtomicUsize>,
+}
+
+impl Runner for TestRunner {
+    type TaskCell = future::TaskCell;
+    
+    fn handle(&mut self, local: &mut Local<Self::TaskCell>, task_cell: Self::TaskCell) -> bool {
+        let ret = self.inner.handle(local, task_cell);
+        if (local.remote().core.active_workers() >> 1) > self.thread_cnt.load(Ordering::Relaxed) {
+            local.force_park(|| {
+                (local.remote().core.active_workers() >> 1) > self.thread_cnt.load(Ordering::Relaxed)
+            });
+        }
+        ret
+    }
 }

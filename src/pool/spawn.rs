@@ -60,6 +60,9 @@ impl<T> QueueCore<T> {
     /// the action.
     pub fn ensure_workers(&self, source: usize) {
         let cnt = self.active_workers.load(Ordering::SeqCst);
+
+        // println!("active_workers: {} {} {} {}", cnt >> WORKER_COUNT_SHIFT >= self.config.core_thread_count.load(Ordering::SeqCst), cnt, self.config.core_thread_count.load(Ordering::SeqCst), is_shutdown(cnt));
+
         if (cnt >> WORKER_COUNT_SHIFT) >= self.config.core_thread_count.load(Ordering::SeqCst)
             || is_shutdown(cnt)
         {
@@ -73,11 +76,14 @@ impl<T> QueueCore<T> {
             parking_lot_core::unpark_filter(
                 addr,
                 |p: ParkToken| {
+                    // println!("ensure unpark {} {} {}", unparked_once, p.0, self.config.core_thread_count.load(Ordering::SeqCst));
                     if !unparked_once && p.0 <= self.config.core_thread_count.load(Ordering::SeqCst)
                     {
                         unparked_once = true;
+                        println!("{} Filter::Unpark", p.0);
                         FilterOp::Unpark
                     } else {
+                        // println!("{} Filter::Skip", p.0);
                         FilterOp::Skip
                     }
                 },
@@ -106,8 +112,9 @@ impl<T> QueueCore<T> {
     /// Marks the current thread in sleep state.
     ///
     /// It can be marked as sleep only when the pool is not shutting down.
-    pub fn mark_sleep(&self) -> bool {
+    pub fn mark_sleep(&self, local_id: usize) -> bool {
         let mut cnt = self.active_workers.load(Ordering::SeqCst);
+        println!("{} mark_sleep: {}", local_id, cnt);
         loop {
             if is_shutdown(cnt) {
                 return false;
@@ -126,8 +133,9 @@ impl<T> QueueCore<T> {
     }
 
     /// Marks current thread as woken up states.
-    pub fn mark_woken(&self) {
+    pub fn mark_woken(&self, local_id: usize) {
         let mut cnt = self.active_workers.load(Ordering::SeqCst);
+        println!("{} mark_woken: {}", local_id, cnt);
         loop {
             match self.active_workers.compare_exchange_weak(
                 cnt,
@@ -148,6 +156,9 @@ impl<T> QueueCore<T> {
         } else if new_thread_count < self.config.min_thread_count {
             new_thread_count = self.config.min_thread_count;
         }
+
+        println!("scale_workers: {}", new_thread_count);
+
         self.config
             .core_thread_count
             .store(new_thread_count, Ordering::SeqCst);
@@ -265,6 +276,11 @@ impl<T: TaskCell + Send> Local<T> {
         }
     }
 
+    /// current worker id
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
     /// Spawns a task to the local queue.
     pub fn spawn(&mut self, task: impl WithExtras<T>) {
         let t = task.with_extras(|| self.local_queue.default_extras());
@@ -296,6 +312,44 @@ impl<T: TaskCell + Send> Local<T> {
         self.local_queue.pop()
     }
 
+    pub(crate) fn force_park(&self, validate: impl FnOnce() ->bool) {
+        let address = &*self.core as *const QueueCore<T> as usize;
+        let id = self.id;
+
+        let mut mark_sleep = false;
+
+        let res = unsafe {
+            parking_lot_core::park(
+                address,
+                || {
+                    if !validate() {
+                        return false;
+                    }
+
+                    mark_sleep = true;
+
+                    println!("worker parked {} force", self.id);
+                    self.core.mark_sleep(self.id)
+                },
+                || {
+                },
+                |_, _| {},
+                ParkToken(id),
+                None,
+            )
+        };
+        match res {
+            ParkResult::Unparked(_) | ParkResult::Invalid => {
+                // println!("worker {} unparked {} {}", self.id, self.core.active_workers(), mark_sleep);
+                if mark_sleep {
+                    self.core.mark_woken(self.id);
+                }
+                // println!("worker {} after unparked {}", self.id, self.core.active_workers());
+            }
+            ParkResult::TimedOut => unreachable!(),
+        }
+    }
+
     /// Pops a task from the queue.
     ///
     /// If there are no tasks at the moment, it will go to sleep until woken
@@ -309,7 +363,7 @@ impl<T: TaskCell + Send> Local<T> {
             parking_lot_core::park(
                 address,
                 || {
-                    if !self.core.mark_sleep() {
+                    if !self.core.mark_sleep(self.id) {
                         return false;
                     }
                     task = self.local_queue.pop();
@@ -323,7 +377,7 @@ impl<T: TaskCell + Send> Local<T> {
         };
         match res {
             ParkResult::Unparked(_) | ParkResult::Invalid => {
-                self.core.mark_woken();
+                self.core.mark_woken(self.id);
                 task
             }
             ParkResult::TimedOut => unreachable!(),
