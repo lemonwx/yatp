@@ -381,9 +381,10 @@ impl Runner for TestRunner {
     
     fn handle(&mut self, local: &mut Local<Self::TaskCell>, task_cell: Self::TaskCell) -> bool {
         let ret = self.inner.handle(local, task_cell);
-        if (local.remote().core.active_workers() >> 1) > self.thread_cnt.load(Ordering::Relaxed) {
+        let thread_cnt_limit = self.thread_cnt.load(Ordering::Relaxed);
+        if local.id() > thread_cnt_limit {
             local.force_park(|| {
-                (local.remote().core.active_workers() >> 1) > self.thread_cnt.load(Ordering::Relaxed)
+                true
             });
         }
         ret
