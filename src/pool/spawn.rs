@@ -80,7 +80,7 @@ impl<T> QueueCore<T> {
                     if !unparked_once && p.0 <= self.config.core_thread_count.load(Ordering::SeqCst)
                     {
                         unparked_once = true;
-                        println!("{} Filter::Unpark", p.0);
+                        // println!("{} Filter::Unpark", p.0);
                         FilterOp::Unpark
                     } else {
                         // println!("{} Filter::Skip", p.0);
@@ -114,7 +114,7 @@ impl<T> QueueCore<T> {
     /// It can be marked as sleep only when the pool is not shutting down.
     pub fn mark_sleep(&self, local_id: usize) -> bool {
         let mut cnt = self.active_workers.load(Ordering::SeqCst);
-        println!("{} mark_sleep: {}", local_id, cnt);
+        // println!("{} mark_sleep: {}", local_id, cnt);
         loop {
             if is_shutdown(cnt) {
                 return false;
@@ -135,7 +135,6 @@ impl<T> QueueCore<T> {
     /// Marks current thread as woken up states.
     pub fn mark_woken(&self, local_id: usize) {
         let mut cnt = self.active_workers.load(Ordering::SeqCst);
-        println!("{} mark_woken: {}", local_id, cnt);
         loop {
             match self.active_workers.compare_exchange_weak(
                 cnt,
@@ -156,8 +155,6 @@ impl<T> QueueCore<T> {
         } else if new_thread_count < self.config.min_thread_count {
             new_thread_count = self.config.min_thread_count;
         }
-
-        println!("scale_workers: {}", new_thread_count);
 
         self.config
             .core_thread_count
@@ -328,7 +325,7 @@ impl<T: TaskCell + Send> Local<T> {
 
                     mark_sleep = true;
 
-                    println!("worker parked {} force", self.id);
+                    // println!("worker parked {} force", self.id);
                     self.core.mark_sleep(self.id)
                 },
                 || {
