@@ -312,7 +312,7 @@ impl<T: TaskCell + Send> Local<T> {
         self.local_queue.pop()
     }
 
-    pub(crate) fn force_park(&self, validate: impl FnOnce() ->bool) {
+    pub fn force_park(&self, validate: impl FnOnce() ->bool) {
         let address = &*self.core as *const QueueCore<T> as usize;
         let id = self.id;
 
